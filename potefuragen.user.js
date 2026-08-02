@@ -8,6 +8,7 @@
 // @run-at       document-start
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
+// @connect      mail-api.potefura.jp
 // ==/UserScript==
 
 (function() {
