@@ -9,6 +9,8 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @connect      mail-api.potefura.jp
+// @downloadURL  https://raw.githubusercontent.com/potefura/tokengen/refs/heads/main/potefuragen.user.js
+// @updateURL    https://raw.githubusercontent.com/potefura/tokengen/refs/heads/main/potefuragen.user.js
 // ==/UserScript==
 
 (function() {
