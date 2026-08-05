@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         acc gen v3 (Improved)
+// @name         potefuragen
 // @namespace    http://tampermonkey.net/
-// @version      5.0
+// @version      5.1
 // @description  メールAPI自動取得 + 認証メール待機版
 // @author       potefura
 // @match        https://discord.com/*
