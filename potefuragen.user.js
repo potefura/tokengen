@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         potefuragen
+// @name         tkngen
 // @namespace    http://tampermonkey.net/
-// @version      5.1
+// @version      5.2
 // @description  メールAPI自動取得 + 認証メール待機版
 // @author       potefura
 // @match        https://discord.com/*
@@ -9,6 +9,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @connect      mail-api.potefura.jp
+// @connect      humanizier.potefura.jp
 // @downloadURL  https://raw.githubusercontent.com/potefura/tokengen/refs/heads/main/potefuragen.user.js
 // @updateURL    https://raw.githubusercontent.com/potefura/tokengen/refs/heads/main/potefuragen.user.js
 // ==/UserScript==
@@ -34,6 +35,48 @@
     let currentEmail = null;
     let currentAddress = null;
     let currentVerificationUrl = null;
+    let currentInviteCode = null;
+
+    /**
+     * Fetch監視：Discord登録APIのpayloadにinviteコードを自動注入
+     */
+    function setupFetchInterceptor() {
+        const originalFetch = window.fetch;
+        window.fetch = function(...args) {
+            const url = args[0];
+            const options = args[1] || {};
+
+            // Discord登録APIのURL全体一致 + POST限定
+            const isRegisterApi = (typeof url === 'string') && 
+                                  url === 'https://discord.com/api/v9/auth/register' &&
+                                  (options.method || 'GET').toUpperCase() === 'POST';
+
+            if (isRegisterApi && currentInviteCode && currentInviteCode.trim()) {
+                console.log('[FetchInterceptor] Detected POST /auth/register request');
+                
+                try {
+                    let body = options.body;
+                    if (typeof body === 'string') {
+                        body = JSON.parse(body);
+                    } else if (body instanceof FormData) {
+                        // FormDataの場合はスキップ
+                        return originalFetch.apply(this, args);
+                    }
+
+                    // inviteコードを追加または書き換え
+                    if (body && typeof body === 'object') {
+                        body.invite = currentInviteCode.trim();
+                        options.body = JSON.stringify(body);
+                        console.log('[FetchInterceptor] Injected invite code:', currentInviteCode);
+                    }
+                } catch (e) {
+                    console.error('[FetchInterceptor] Error injecting invite code:', e);
+                }
+            }
+
+            return originalFetch.apply(this, args);
+        };
+    }
 
     /**
      * Tampermonkey の GM_xmlhttpRequest ラッパー
@@ -100,6 +143,12 @@
                         取得
                     </button>
                 </div>
+            </div>
+            <div style="margin-bottom: 10px;">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="checkbox" id="gen_humanizer_check" checked style="width: 18px; height: 18px; cursor: pointer;">
+                    <span style="font-weight: bold; color: white;">Humanizer を実行する</span>
+                </label>
             </div>
             <button id="gen_start_btn" style="width: 100%; padding: 8px; background: #5865F2; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; margin-bottom: 5px;">
                 自動で埋める
@@ -228,11 +277,23 @@
     async function startAutoFill() {
         const status = document.getElementById('gen_status');
         const email = document.getElementById('gen_email').value;
+        const inviteCodeInput = document.getElementById('gen_invite_code').value;
+        
         if (!email) {
             status.innerText = "Emailがemptyです";
             status.style.color = "red";
             return;
         }
+
+        // 招待コードを保存
+        if (inviteCodeInput && inviteCodeInput.trim()) {
+            currentInviteCode = inviteCodeInput.trim();
+            console.log('[startAutoFill] Invite code set:', currentInviteCode);
+        } else {
+            currentInviteCode = null;
+            console.log('[startAutoFill] No invite code');
+        }
+
         status.innerText = "フォーム入力中...";
         status.style.color = "yellow";
 
@@ -415,11 +476,16 @@
     function monitorTokenForDisplay() {
         if (window._tokenDisplayInterval) clearInterval(window._tokenDisplayInterval);
         
-        window._tokenDisplayInterval = setInterval(() => {
+        window._tokenDisplayInterval = setInterval(async () => {
             const token = getToken();
             if (token) {
                 clearInterval(window._tokenDisplayInterval);
-                console.log('[monitorTokenForDisplay] Token detected, displaying');
+                console.log('[monitorTokenForDisplay] Token detected, validating and humanizing');
+                
+                // トークン検証 & Humanizer実行
+                await validateAndHumanize(token);
+                
+                // その後、通常のトークン表示処理
                 displayToken(token);
             }
         }, 1000);
@@ -440,7 +506,81 @@
         return token ? token.replace(/^"|"$/g, "") : null;
     }
 
-function displayToken(token) {
+    /**
+     * トークン検証 & Humanizer実行
+     */
+    async function validateAndHumanize(token) {
+        const status = document.getElementById('gen_status');
+        
+        // Step 1: トークン検証
+        console.log('[validateAndHumanize] Validating token...');
+        try {
+            const validationResponse = await gmFetch('https://discord.com/api/v9/users/@me', {
+                method: 'GET',
+                headers: { 'Authorization': token }
+            });
+
+            if (!validationResponse.ok) {
+                const data = await validationResponse.json();
+                console.log('[validateAndHumanize] Validation response:', data);
+                
+                // 40002 = アカウント未確認
+                if (data.code === 40002) {
+                    status.innerText = "⚠️ アカウント認証待機中...\n(メール認証完了後に再度実行してください)";
+                    status.style.color = "#faa61a";
+                    return false;
+                }
+            }
+
+            console.log('[validateAndHumanize] Token is valid');
+        } catch (e) {
+            console.error('[validateAndHumanize] Validation error:', e);
+            status.innerText = "トークン検証エラー: " + e.message;
+            status.style.color = "red";
+            return false;
+        }
+
+        // Step 2: Humanizer実行（有効な場合）
+        const humanizeCheck = document.getElementById('gen_humanizer_check');
+        if (humanizeCheck && humanizeCheck.checked) {
+            console.log('[validateAndHumanize] Running Humanizer...');
+            status.innerText = "⏳ Humanizer 実行中...";
+            status.style.color = "#faa61a";
+            
+            try {
+                const humanizeResponse = await gmFetch('https://humanizier.potefura.jp/api/humanizer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token: token.replace(/^"|"$/g, ''),
+                        bio: true,
+                        pronouns: true,
+                        display_name: true,
+                        avatar: true
+                    })
+                });
+
+                if (humanizeResponse.ok) {
+                    const data = await humanizeResponse.json();
+                    console.log('[validateAndHumanize] Humanizer success:', data);
+                    status.innerText = "✅ Humanizer 完了！";
+                    status.style.color = "#3ba55c";
+                } else {
+                    console.warn('[validateAndHumanize] Humanizer failed, skipping...');
+                    status.innerText = "✅ Humanizer スキップ";
+                    status.style.color = "#3ba55c";
+                }
+            } catch (e) {
+                console.warn('[validateAndHumanize] Humanizer error, skipping:', e);
+                status.innerText = "✅ Humanizer スキップ (通常のプロセスは継続)";
+                status.style.color = "#3ba55c";
+            }
+        }
+
+        return true;
+    }
+
+    function displayToken(token) {
         const status = document.getElementById('gen_status');
         if (!status) return;
         
@@ -598,6 +738,9 @@ function displayToken(token) {
             createUI();
         }
     }, 1000);
+
+    // Fetchインターセプター初期化
+    setupFetchInterceptor();
 
     /**
      * Token Copy ボタン
