@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         potefuragen
 // @namespace    http://tampermonkey.net/
-// @version      5.1
-// @description  メールAPI自動取得 + 認証メール待機版 + Humanizer
+// @version      5.3
+// @description  手動gen
 // @author       potefura
 // @match        https://discord.com/*
 // @run-at       document-start
