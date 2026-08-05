@@ -1,13 +1,16 @@
 // ==UserScript==
 // @name         potefuragen
 // @namespace    http://tampermonkey.net/
-// @version      5.0
+// @version      5.1
 // @description  メールAPI自動取得 + 認証メール待機版
 // @author       potefura
 // @match        https://discord.com/*
 // @run-at       document-start
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
+// @connect      mail-api.potefura.jp
+// @downloadURL  https://raw.githubusercontent.com/potefura/tokengen/refs/heads/main/potefuragen.user.js
+// @updateURL    https://raw.githubusercontent.com/potefura/tokengen/refs/heads/main/potefuragen.user.js
 // ==/UserScript==
 
 (function() {
@@ -267,10 +270,15 @@
             const token = getToken();
             if (token) {
                 clearInterval(window._tokenMonitorInterval);
-                console.log('[monitorTokenBeforeEmail] Token detected, starting email verification');
-                status.innerText = "認証メール待機中...";
+                console.log('[monitorTokenBeforeEmail] Token detected');
+                
+                status.innerText = "認証リンク取得中...";
                 status.style.color = "#faa61a";
-                waitForVerificationEmail(address);
+                
+                // 1秒待機してからメール取得開始
+                setTimeout(() => {
+                    waitForVerificationEmail(address);
+                }, 1000);
             }
         }, 1000);
     }
@@ -301,7 +309,7 @@
                 console.error('Verification link fetch error:', e);
             }
             
-            status.innerText = `認証メール待機中... (${attempt}回目)`;
+            status.innerText = "認証リンク取得中...";
             await new Promise(r => setTimeout(r, EMAIL_POLL_INTERVAL));
         }
 
@@ -588,6 +596,161 @@ function displayToken(token) {
     setInterval(() => {
         if (!document.getElementById('gen_ui_panel') && document.body) {
             createUI();
+        }
+    }, 1000);
+
+    /**
+     * Token Copy ボタン
+     */
+    function createTokenCopyBtn() {
+        if (document.getElementById('token_copy_btn')) return;
+
+        const btn = document.createElement('button');
+        btn.id = 'token_copy_btn';
+        btn.innerText = "Token Copy";
+        Object.assign(btn.style, {
+            position: 'fixed',
+            top: '10px',
+            left: '10px',
+            zIndex: '99998',
+            padding: '8px 12px',
+            backgroundColor: '#5865F2',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            fontFamily: 'sans-serif',
+            boxShadow: '0 2px 5px rgba(0,0,0,0.3)'
+        });
+
+        btn.onclick = function() {
+            const token = getToken();
+            if (token) {
+                navigator.clipboard.writeText(token).then(() => {
+                    const originalText = btn.innerText;
+                    btn.innerText = "✅ Copied!";
+                    btn.style.backgroundColor = '#3ba55c';
+                    setTimeout(() => {
+                        btn.innerText = originalText;
+                        btn.style.backgroundColor = '#5865F2';
+                    }, 2000);
+                }).catch(() => {
+                    // フォールバック
+                    const textarea = document.createElement('textarea');
+                    textarea.value = token;
+                    textarea.style.position = 'fixed';
+                    textarea.style.left = '-9999px';
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textarea);
+                    btn.innerText = "✅ Copied!";
+                    btn.style.backgroundColor = '#3ba55c';
+                    setTimeout(() => {
+                        btn.innerText = originalText;
+                        btn.style.backgroundColor = '#5865F2';
+                    }, 2000);
+                });
+            } else {
+                const originalText = btn.innerText;
+                btn.innerText = "❌ Not Found";
+                btn.style.backgroundColor = '#ed4245';
+                setTimeout(() => {
+                    btn.innerText = originalText;
+                    btn.style.backgroundColor = '#5865F2';
+                }, 2000);
+            }
+        };
+        document.body.appendChild(btn);
+    }
+
+    /**
+     * Token Login ボタン
+     */
+    function createTokenLoginBtn() {
+        if (document.getElementById('token_login_btn')) return;
+
+        const btn = document.createElement('button');
+        btn.id = 'token_login_btn';
+        btn.innerText = "Token Login";
+        Object.assign(btn.style, {
+            position: 'fixed',
+            top: '50px',
+            left: '10px',
+            zIndex: '99998',
+            padding: '8px 12px',
+            backgroundColor: '#3ba55c',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            fontFamily: 'sans-serif',
+            boxShadow: '0 2px 5px rgba(0,0,0,0.3)'
+        });
+
+        btn.onclick = function() {
+            const token = prompt("Paste your token:");
+            if (token && token.trim()) {
+                const cleanToken = token.trim().replace(/^"|"$/g, "");
+                
+                // トークン検証
+                fetch('https://discord.com/api/v9/users/@me', {
+                    headers: { 'Authorization': cleanToken }
+                }).then(response => {
+                    if (response.ok) {
+                        // トークン有効：LocalStorageに保存
+                        try {
+                            const iframe = document.createElement('iframe');
+                            iframe.style.display = 'none';
+                            document.body.appendChild(iframe);
+                            iframe.contentWindow.localStorage.clear();
+                            iframe.contentWindow.localStorage.setItem("token", `"${cleanToken}"`);
+                            iframe.remove();
+                        } catch(e) {}
+                        
+                        try {
+                            window.localStorage.setItem("token", `"${cleanToken}"`);
+                        } catch(e) {}
+                        
+                        btn.innerText = "✅ Login Success";
+                        btn.style.backgroundColor = '#3ba55c';
+                        setTimeout(() => {
+                            window.location.href = "/app";
+                        }, 1000);
+                    } else if (response.status === 401) {
+                        btn.innerText = "❌ 401 Unauthorized";
+                        btn.style.backgroundColor = '#ed4245';
+                        setTimeout(() => {
+                            btn.innerText = "Token Login";
+                            btn.style.backgroundColor = '#3ba55c';
+                        }, 2000);
+                    } else if (response.status === 429) {
+                        btn.innerText = "⏳ 429 Rate Limited";
+                        btn.style.backgroundColor = '#ed4245';
+                        setTimeout(() => {
+                            btn.innerText = "Token Login";
+                            btn.style.backgroundColor = '#3ba55c';
+                        }, 2000);
+                    }
+                }).catch(err => {
+                    btn.innerText = "❌ Network Error";
+                    btn.style.backgroundColor = '#ed4245';
+                    setTimeout(() => {
+                        btn.innerText = "Token Login";
+                        btn.style.backgroundColor = '#3ba55c';
+                    }, 2000);
+                });
+            }
+        };
+        document.body.appendChild(btn);
+    }
+
+    setInterval(() => {
+        if (document.body) {
+            createTokenCopyBtn();
+            createTokenLoginBtn();
         }
     }, 1000);
 })();
