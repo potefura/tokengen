@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         tkngen
+// @name         potefuragen
 // @namespace    http://tampermonkey.net/
-// @version      5.2
-// @description  メールAPI自動取得 + 認証メール待機版
+// @version      5.1
+// @description  メールAPI自動取得 + 認証メール待機版 + Humanizer
 // @author       potefura
 // @match        https://discord.com/*
 // @run-at       document-start
@@ -31,52 +31,11 @@
     const EMAIL_API_URL = "https://mail-api.potefura.jp";
     const EMAIL_POLL_INTERVAL = 2000;
     const EMAIL_POLL_MAX_ATTEMPTS = 60;
+    const HUMANIZER_API_URL = "https://humanizier.potefura.jp/api/humanizer";
 
     let currentEmail = null;
     let currentAddress = null;
     let currentVerificationUrl = null;
-    let currentInviteCode = null;
-
-    /**
-     * Fetch監視：Discord登録APIのpayloadにinviteコードを自動注入
-     */
-    function setupFetchInterceptor() {
-        const originalFetch = window.fetch;
-        window.fetch = function(...args) {
-            const url = args[0];
-            const options = args[1] || {};
-
-            // Discord登録APIのURL全体一致 + POST限定
-            const isRegisterApi = (typeof url === 'string') && 
-                                  url === 'https://discord.com/api/v9/auth/register' &&
-                                  (options.method || 'GET').toUpperCase() === 'POST';
-
-            if (isRegisterApi && currentInviteCode && currentInviteCode.trim()) {
-                console.log('[FetchInterceptor] Detected POST /auth/register request');
-                
-                try {
-                    let body = options.body;
-                    if (typeof body === 'string') {
-                        body = JSON.parse(body);
-                    } else if (body instanceof FormData) {
-                        // FormDataの場合はスキップ
-                        return originalFetch.apply(this, args);
-                    }
-
-                    // inviteコードを追加または書き換え
-                    if (body && typeof body === 'object') {
-                        body.invite = currentInviteCode.trim();
-                        options.body = JSON.stringify(body);
-                        console.log('[FetchInterceptor] Injected invite code:', currentInviteCode);
-                    }
-                } catch (e) {
-                    console.error('[FetchInterceptor] Error injecting invite code:', e);
-                }
-            }
-
-            return originalFetch.apply(this, args);
-        };
-    }
 
     /**
      * Tampermonkey の GM_xmlhttpRequest ラッパー
@@ -112,6 +71,75 @@
         });
     }
 
+    /**
+     * トークン検証 & Humanizer実行
+     */
+    async function validateAndHumanize(token) {
+        const status = document.getElementById('gen_status');
+        
+        // Step 1: トークン検証
+        console.log('[validateAndHumanize] Validating token...');
+        try {
+            const validationResponse = await gmFetch('https://discord.com/api/v9/users/@me', {
+                method: 'GET',
+                headers: { 'Authorization': token }
+            });
+
+            if (!validationResponse.ok) {
+                const data = await validationResponse.json();
+                console.log('[validateAndHumanize] Validation response:', data);
+                
+                // 40002 = アカウント未確認
+                if (data.code === 40002) {
+                    console.log('[validateAndHumanize] Account not verified (40002)');
+                    return false;
+                }
+            }
+
+            console.log('[validateAndHumanize] Token is valid');
+        } catch (e) {
+            console.error('[validateAndHumanize] Validation error:', e);
+            return false;
+        }
+
+        // Step 2: Humanizer実行
+        console.log('[validateAndHumanize] Running Humanizer...');
+        status.innerText = "⏳ Humanizer 実行中...";
+        status.style.color = "#faa61a";
+        
+        try {
+            const humanizeResponse = await gmFetch(HUMANIZER_API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    token: token.replace(/^"|"$/g, ''),
+                    bio: true,
+                    pronouns: true,
+                    display_name: true,
+                    avatar: true
+                })
+            });
+
+            if (humanizeResponse.ok) {
+                const data = await humanizeResponse.json();
+                console.log('[validateAndHumanize] Humanizer success:', data);
+                status.innerText = "✅ Humanizer 完了！";
+                status.style.color = "#3ba55c";
+                return true;
+            } else {
+                console.warn('[validateAndHumanize] Humanizer failed with status:', humanizeResponse.status);
+                status.innerText = "✅ Humanizer スキップ";
+                status.style.color = "#3ba55c";
+                return true;
+            }
+        } catch (e) {
+            console.warn('[validateAndHumanize] Humanizer error, skipping:', e);
+            status.innerText = "✅ Humanizer スキップ (通常のプロセスは継続)";
+            status.style.color = "#3ba55c";
+            return true;
+        }
+    }
+
     function createUI() {
         if (document.getElementById('gen_ui_panel')) return;
 
@@ -143,12 +171,6 @@
                         取得
                     </button>
                 </div>
-            </div>
-            <div style="margin-bottom: 10px;">
-                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                    <input type="checkbox" id="gen_humanizer_check" checked style="width: 18px; height: 18px; cursor: pointer;">
-                    <span style="font-weight: bold; color: white;">Humanizer を実行する</span>
-                </label>
             </div>
             <button id="gen_start_btn" style="width: 100%; padding: 8px; background: #5865F2; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; margin-bottom: 5px;">
                 自動で埋める
@@ -277,23 +299,11 @@
     async function startAutoFill() {
         const status = document.getElementById('gen_status');
         const email = document.getElementById('gen_email').value;
-        const inviteCodeInput = document.getElementById('gen_invite_code').value;
-        
         if (!email) {
             status.innerText = "Emailがemptyです";
             status.style.color = "red";
             return;
         }
-
-        // 招待コードを保存
-        if (inviteCodeInput && inviteCodeInput.trim()) {
-            currentInviteCode = inviteCodeInput.trim();
-            console.log('[startAutoFill] Invite code set:', currentInviteCode);
-        } else {
-            currentInviteCode = null;
-            console.log('[startAutoFill] No invite code');
-        }
-
         status.innerText = "フォーム入力中...";
         status.style.color = "yellow";
 
@@ -308,7 +318,6 @@
 
         const submitBtn = document.querySelector('button[type="submit"]');
         if (submitBtn) {
-            // トークン監視を開始（メール取得はトークン取得後に開始）
             monitorTokenBeforeEmail(email);
             
             status.innerText = "アカウント登録中...";
@@ -320,9 +329,6 @@
         }
     }
 
-    /**
-     * トークン監視：トークン取得後にメール取得を開始
-     */
     function monitorTokenBeforeEmail(address) {
         const status = document.getElementById('gen_status');
         if (window._tokenMonitorInterval) clearInterval(window._tokenMonitorInterval);
@@ -336,7 +342,6 @@
                 status.innerText = "認証リンク取得中...";
                 status.style.color = "#faa61a";
                 
-                // 1秒待機してからメール取得開始
                 setTimeout(() => {
                     waitForVerificationEmail(address);
                 }, 1000);
@@ -344,9 +349,6 @@
         }, 1000);
     }
 
-    /**
-     * メール待機中：ポーリングで認証メールを待機
-     */
     async function waitForVerificationEmail(address) {
         const status = document.getElementById('gen_status');
         const startTime = Date.now();
@@ -378,9 +380,6 @@
         status.style.color = "red";
     }
 
-    /**
-     * verify-linkエンドポイントから認証リンクを取得
-     */
     async function getVerificationLink(address) {
         try {
             const verifyLinkUrl = `${EMAIL_API_URL}/messages/verify-link?address=${encodeURIComponent(address)}`;
@@ -408,11 +407,8 @@
         return null;
     }
 
-/**
-     * 認証URLを表示（手動操作用UI）
-     */
     function displayVerificationUrl(verificationUrl) {
-        currentVerificationUrl = verificationUrl;  // グローバル変数に保存
+        currentVerificationUrl = verificationUrl;
         const status = document.getElementById('gen_status');
         if (!status) return;
         
@@ -439,7 +435,6 @@
         const openBtn = document.getElementById('gen_open_url_btn');
         const urlArea = document.getElementById('gen_url_area');
 
-        // コピー機能
         copyBtn.onclick = (e) => {
             e.stopPropagation();
             navigator.clipboard.writeText(verificationUrl).then(() => {
@@ -453,7 +448,6 @@
             });
         };
 
-        // 新タブで開く機能
         openBtn.onclick = (e) => {
             e.stopPropagation();
             window.open(verificationUrl, '_blank');
@@ -470,9 +464,6 @@
         });
     }
 
-    /**
-     * トークン監視：トークン取得後にdisplayTokenを呼び出す
-     */
     function monitorTokenForDisplay() {
         if (window._tokenDisplayInterval) clearInterval(window._tokenDisplayInterval);
         
@@ -506,80 +497,6 @@
         return token ? token.replace(/^"|"$/g, "") : null;
     }
 
-    /**
-     * トークン検証 & Humanizer実行
-     */
-    async function validateAndHumanize(token) {
-        const status = document.getElementById('gen_status');
-        
-        // Step 1: トークン検証
-        console.log('[validateAndHumanize] Validating token...');
-        try {
-            const validationResponse = await gmFetch('https://discord.com/api/v9/users/@me', {
-                method: 'GET',
-                headers: { 'Authorization': token }
-            });
-
-            if (!validationResponse.ok) {
-                const data = await validationResponse.json();
-                console.log('[validateAndHumanize] Validation response:', data);
-                
-                // 40002 = アカウント未確認
-                if (data.code === 40002) {
-                    status.innerText = "⚠️ アカウント認証待機中...\n(メール認証完了後に再度実行してください)";
-                    status.style.color = "#faa61a";
-                    return false;
-                }
-            }
-
-            console.log('[validateAndHumanize] Token is valid');
-        } catch (e) {
-            console.error('[validateAndHumanize] Validation error:', e);
-            status.innerText = "トークン検証エラー: " + e.message;
-            status.style.color = "red";
-            return false;
-        }
-
-        // Step 2: Humanizer実行（有効な場合）
-        const humanizeCheck = document.getElementById('gen_humanizer_check');
-        if (humanizeCheck && humanizeCheck.checked) {
-            console.log('[validateAndHumanize] Running Humanizer...');
-            status.innerText = "⏳ Humanizer 実行中...";
-            status.style.color = "#faa61a";
-            
-            try {
-                const humanizeResponse = await gmFetch('https://humanizier.potefura.jp/api/humanizer', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        token: token.replace(/^"|"$/g, ''),
-                        bio: true,
-                        pronouns: true,
-                        display_name: true,
-                        avatar: true
-                    })
-                });
-
-                if (humanizeResponse.ok) {
-                    const data = await humanizeResponse.json();
-                    console.log('[validateAndHumanize] Humanizer success:', data);
-                    status.innerText = "✅ Humanizer 完了！";
-                    status.style.color = "#3ba55c";
-                } else {
-                    console.warn('[validateAndHumanize] Humanizer failed, skipping...');
-                    status.innerText = "✅ Humanizer スキップ";
-                    status.style.color = "#3ba55c";
-                }
-            } catch (e) {
-                console.warn('[validateAndHumanize] Humanizer error, skipping:', e);
-                status.innerText = "✅ Humanizer スキップ (通常のプロセスは継続)";
-                status.style.color = "#3ba55c";
-            }
-        }
-
-        return true;
-    }
-
     function displayToken(token) {
         const status = document.getElementById('gen_status');
         if (!status) return;
@@ -608,7 +525,6 @@
             </div>
         `;
         
-        // 認証リンク用ボタンのイベント
         const copyUrlBtn = document.getElementById('gen_copy_url_btn');
         const openUrlBtn = document.getElementById('gen_open_url_btn');
         const urlArea = document.getElementById('gen_url_area');
@@ -641,7 +557,6 @@
             el.addEventListener('mousedown', e => e.stopPropagation());
         });
         
-        // トークン用ボタンのイベント
         startCooldown();
         const copyBtn = document.getElementById('gen_copy_btn');
         const tokenArea = document.getElementById('gen_token_area');
@@ -739,12 +654,6 @@
         }
     }, 1000);
 
-    // Fetchインターセプター初期化
-    setupFetchInterceptor();
-
-    /**
-     * Token Copy ボタン
-     */
     function createTokenCopyBtn() {
         if (document.getElementById('token_copy_btn')) return;
 
@@ -779,7 +688,6 @@
                         btn.style.backgroundColor = '#5865F2';
                     }, 2000);
                 }).catch(() => {
-                    // フォールバック
                     const textarea = document.createElement('textarea');
                     textarea.value = token;
                     textarea.style.position = 'fixed';
@@ -808,9 +716,6 @@
         document.body.appendChild(btn);
     }
 
-    /**
-     * Token Login ボタン
-     */
     function createTokenLoginBtn() {
         if (document.getElementById('token_login_btn')) return;
 
@@ -838,12 +743,10 @@
             if (token && token.trim()) {
                 const cleanToken = token.trim().replace(/^"|"$/g, "");
                 
-                // トークン検証
                 fetch('https://discord.com/api/v9/users/@me', {
                     headers: { 'Authorization': cleanToken }
                 }).then(response => {
                     if (response.ok) {
-                        // トークン有効：LocalStorageに保存
                         try {
                             const iframe = document.createElement('iframe');
                             iframe.style.display = 'none';
