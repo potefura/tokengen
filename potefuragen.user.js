@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         potefuragen
 // @namespace    http://tampermonkey.net/
-// @version      5.3
-// @description  手動gen
+// @version      5.1
+// @description  メールAPI自動取得 + 認証メール待機版 + Humanizer
 // @author       potefura
 // @match        https://discord.com/*
 // @run-at       document-start
@@ -76,6 +76,7 @@
      */
     async function validateAndHumanize(token) {
         const status = document.getElementById('gen_status');
+        const humanizeCheck = document.getElementById('gen_humanizer_check');
         
         // Step 1: トークン検証
         console.log('[validateAndHumanize] Validating token...');
@@ -102,40 +103,45 @@
             return false;
         }
 
-        // Step 2: Humanizer実行
-        console.log('[validateAndHumanize] Running Humanizer...');
-        status.innerText = "⏳ Humanizer 実行中...";
-        status.style.color = "#faa61a";
-        
-        try {
-            const humanizeResponse = await gmFetch(HUMANIZER_API_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    token: token.replace(/^"|"$/g, ''),
-                    bio: true,
-                    pronouns: true,
-                    display_name: true,
-                    avatar: true
-                })
-            });
+        // Step 2: Humanizer実行（チェックボックスが ON の場合）
+        if (humanizeCheck && humanizeCheck.checked) {
+            console.log('[validateAndHumanize] Running Humanizer...');
+            status.innerText = "⏳ Humanizer 実行中...";
+            status.style.color = "#faa61a";
+            
+            try {
+                const humanizeResponse = await gmFetch(HUMANIZER_API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token: token.replace(/^"|"$/g, ''),
+                        bio: true,
+                        pronouns: true,
+                        display_name: true,
+                        avatar: true
+                    })
+                });
 
-            if (humanizeResponse.ok) {
-                const data = await humanizeResponse.json();
-                console.log('[validateAndHumanize] Humanizer success:', data);
-                status.innerText = "✅ Humanizer 完了！";
-                status.style.color = "#3ba55c";
-                return true;
-            } else {
-                console.warn('[validateAndHumanize] Humanizer failed with status:', humanizeResponse.status);
-                status.innerText = "✅ Humanizer スキップ";
+                if (humanizeResponse.ok) {
+                    const data = await humanizeResponse.json();
+                    console.log('[validateAndHumanize] Humanizer success:', data);
+                    status.innerText = "✅ Humanizer 完了！";
+                    status.style.color = "#3ba55c";
+                    return true;
+                } else {
+                    console.warn('[validateAndHumanize] Humanizer failed with status:', humanizeResponse.status);
+                    status.innerText = "✅ Humanizer スキップ";
+                    status.style.color = "#3ba55c";
+                    return true;
+                }
+            } catch (e) {
+                console.warn('[validateAndHumanize] Humanizer error, skipping:', e);
+                status.innerText = "✅ Humanizer スキップ (通常のプロセスは継続)";
                 status.style.color = "#3ba55c";
                 return true;
             }
-        } catch (e) {
-            console.warn('[validateAndHumanize] Humanizer error, skipping:', e);
-            status.innerText = "✅ Humanizer スキップ (通常のプロセスは継続)";
-            status.style.color = "#3ba55c";
+        } else {
+            console.log('[validateAndHumanize] Humanizer disabled');
             return true;
         }
     }
@@ -171,6 +177,12 @@
                         取得
                     </button>
                 </div>
+            </div>
+            <div style="margin-bottom: 10px;">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="checkbox" id="gen_humanizer_check" checked style="width: 18px; height: 18px; cursor: pointer;">
+                    <span style="font-weight: bold; color: white;">Humanizer を実行する</span>
+                </label>
             </div>
             <button id="gen_start_btn" style="width: 100%; padding: 8px; background: #5865F2; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; margin-bottom: 5px;">
                 自動で埋める
